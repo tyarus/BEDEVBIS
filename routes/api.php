@@ -6,6 +6,7 @@ use App\Http\Controllers\API\OrderController;
 use App\Http\Controllers\API\OrderTransactionChatController;
 use App\Http\Controllers\API\PaymentController;
 use App\Http\Controllers\API\ProductController;
+use App\Http\Controllers\API\WalletController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -59,6 +60,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/orders/{id}/transaction-chat/status', [OrderTransactionChatController::class, 'updateStatus']);
     Route::post('/orders/{id}/transaction-chat/completion-code', [OrderTransactionChatController::class, 'generateCompletionCode']);
     Route::post('/orders/{id}/transaction-chat/verify-completion-code', [OrderTransactionChatController::class, 'verifyCompletionCode']);
+
+    // Wallet System
+    Route::get('/wallet/me', [WalletController::class, 'getWallet']);
+    Route::post('/wallet/topup', [WalletController::class, 'topup']);
+    Route::get('/wallet/ledger', [WalletController::class, 'getLedger']);
+    Route::get('/wallet/escrows', [WalletController::class, 'getEscrows']);
+    Route::post('/wallet/withdraw', [WalletController::class, 'withdraw']);
+    Route::get('/wallet/withdrawals', [WalletController::class, 'getWithdrawals']);
 });
 
 // Public Product Routes

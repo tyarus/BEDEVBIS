@@ -48,6 +48,11 @@ class Order extends Model
         return $this->hasMany(Payment::class);
     }
 
+    public function walletEscrow()
+    {
+        return $this->hasOne(WalletEscrow::class);
+    }
+
     public function escrowLogs()
     {
         return $this->hasMany(EscrowLog::class);

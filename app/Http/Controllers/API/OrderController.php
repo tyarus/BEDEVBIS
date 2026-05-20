@@ -9,11 +9,19 @@ use App\Http\Resources\OrderResource;
 use App\Models\EscrowLog;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\WalletEscrow;
+use App\Services\WalletService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class OrderController extends Controller
 {
+    private WalletService $walletService;
+
+    public function __construct(WalletService $walletService)
+    {
+        $this->walletService = $walletService;
+    }
     public function store(CreateOrderRequest $request): JsonResponse
     {
         try {
@@ -223,6 +231,21 @@ class OrderController extends Controller
                 ], 422);
             }
 
+            // Try to release escrow if it exists (for ewallet payments)
+            $escrow = WalletEscrow::where('order_id', $order->id)->first();
+            if ($escrow && $escrow->status === 'held') {
+                try {
+                    $this->walletService->releaseFundsToSeller($escrow);
+                } catch (\Exception $e) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Gagal melepaskan dana escrow: ' . $e->getMessage(),
+                        'errors' => [],
+                    ], 400);
+                }
+            }
+            // If no escrow exists, it's a non-wallet payment (bank_transfer/virtual_account)
+
             // Update order
             $order->update(['status' => 'completed']);
 
@@ -232,14 +255,14 @@ class OrderController extends Controller
                 'actor_id' => $request->user()->id,
                 'action' => 'order_confirmed',
                 'amount' => $order->total_price,
-                'note' => 'Dana di-release ke seller',
+                'note' => 'Order dikonfirmasi dan selesai',
             ]);
 
             $order->load(['buyer', 'seller', 'product']);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Order berhasil dikonfirmasi, dana di-release ke seller',
+                'message' => 'Order berhasil dikonfirmasi',
                 'data' => new OrderResource($order),
             ], 200);
         } catch (\Exception $e) {
@@ -265,13 +288,27 @@ class OrderController extends Controller
                 ], 403);
             }
 
-            // Check if order is pending payment
-            if ($order->status !== 'pending_payment') {
+            // Check if order is pending payment (cancel only for unpaid orders)
+            // But if already paid, need to refund from escrow
+            if (!in_array($order->status, ['pending_payment', 'paid', 'shipped'], true)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Hanya order dengan status pending_payment yang bisa dibatalkan',
+                    'message' => 'Order dengan status ' . $order->status . ' tidak bisa dibatalkan',
                     'errors' => [],
                 ], 400);
+            }
+
+            // If order is paid or shipped, try to refund escrow
+            if (in_array($order->status, ['paid', 'shipped'])) {
+                try {
+                    $escrow = WalletEscrow::where('order_id', $order->id)->firstOrFail();
+                    if ($escrow->status === 'held') {
+                        $this->walletService->refundFundsToBuyer($escrow);
+                    }
+                } catch (\Exception $e) {
+                    // If no escrow or refund fails, log but continue
+                    \Log::warning("Failed to refund escrow for order {$id}: " . $e->getMessage());
+                }
             }
 
             // Update order

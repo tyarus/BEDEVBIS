@@ -9,14 +9,23 @@ use App\Models\EscrowLog;
 use App\Models\Notification;
 use App\Models\Order;
 use App\Models\Payment;
+use App\Services\WalletService;
 use Illuminate\Http\JsonResponse;
 
 class PaymentController extends Controller
 {
+    private WalletService $walletService;
+
+    public function __construct(WalletService $walletService)
+    {
+        $this->walletService = $walletService;
+    }
+
     public function pay(PayOrderRequest $request, $orderId): JsonResponse
     {
         try {
             $order = Order::findOrFail($orderId);
+            $paymentMethod = $request->validated()['payment_method'];
 
             // Check if user is the buyer
             if ($order->buyer_id !== $request->user()->id) {
@@ -36,11 +45,30 @@ class PaymentController extends Controller
                 ], 400);
             }
 
+            // If payment method is ewallet, hold funds in escrow
+            if ($paymentMethod === 'ewallet') {
+                try {
+                    $this->walletService->holdFundsForOrder(
+                        $request->user(),
+                        $order->seller,
+                        $order->id,
+                        $order->total_price
+                    );
+                } catch (\Exception $e) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => $e->getMessage(),
+                        'errors' => [],
+                    ], $e->getCode() ?: 400);
+                }
+            }
+            // For bank_transfer or virtual_account, no wallet operation - just simulate
+
             // Create payment (v1: langsung success)
             $payment = Payment::create([
                 'order_id' => $order->id,
                 'amount' => $order->total_price,
-                'method' => $request->payment_method,
+                'method' => $paymentMethod,
                 'status' => 'success',
                 'paid_at' => now(),
             ]);
@@ -60,7 +88,7 @@ class PaymentController extends Controller
                 'actor_id' => $request->user()->id,
                 'action' => 'payment_received',
                 'amount' => $order->total_price,
-                'note' => 'Payment via ' . $request->payment_method,
+                'note' => 'Payment via ' . $paymentMethod,
             ]);
 
             // Send notification to seller

@@ -74,4 +74,29 @@ class User extends Authenticatable
     {
         return $this->hasMany(Notification::class);
     }
+
+    public function walletAccount()
+    {
+        return $this->hasOne(WalletAccount::class);
+    }
+
+    public function walletLedgerEntries()
+    {
+        return $this->hasMany(WalletLedgerEntry::class);
+    }
+
+    public function buyerEscrows()
+    {
+        return $this->hasMany(WalletEscrow::class, 'buyer_id');
+    }
+
+    public function sellerEscrows()
+    {
+        return $this->hasMany(WalletEscrow::class, 'seller_id');
+    }
+
+    public function withdrawals()
+    {
+        return $this->hasMany(WalletWithdrawal::class, 'seller_id');
+    }
 }
