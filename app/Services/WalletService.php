@@ -63,18 +63,21 @@ class WalletService
     /**
      * Hold funds for order (buyer pays)
      */
-    public function holdFundsForOrder(User $buyer, User $seller, int $orderId, int $amount): WalletEscrow
+    public function holdFundsForOrder(User $buyer, User $seller, int $orderId, $amount): WalletEscrow
     {
         return DB::transaction(function () use ($buyer, $seller, $orderId, $amount) {
             $buyerWallet = $this->getOrCreateWalletAccount($buyer);
 
+            // Convert amount to integer for consistent comparison
+            $amountInt = (int) $amount;
+
             // Validate buyer has enough balance
-            if ($buyerWallet->available_balance < $amount) {
+            if ($buyerWallet->available_balance < $amountInt) {
                 throw new \Exception('Saldo tidak cukup untuk melakukan pembayaran', 409);
             }
 
             // Deduct from buyer balance
-            $buyerNewBalance = $buyerWallet->available_balance - $amount;
+            $buyerNewBalance = $buyerWallet->available_balance - $amountInt;
             $buyerWallet->update([
                 'available_balance' => $buyerNewBalance,
             ]);
@@ -85,7 +88,7 @@ class WalletService
                 'order_id' => $orderId,
                 'type' => 'order_hold',
                 'direction' => 'debit',
-                'amount' => $amount,
+                'amount' => $amountInt,
                 'balance_after' => $buyerNewBalance,
                 'description' => 'Dana order ditahan di escrow',
                 'metadata' => null,
@@ -97,7 +100,7 @@ class WalletService
                 'order_id' => $orderId,
                 'buyer_id' => $buyer->id,
                 'seller_id' => $seller->id,
-                'amount' => $amount,
+                'amount' => $amountInt,
                 'status' => 'held',
             ]);
 

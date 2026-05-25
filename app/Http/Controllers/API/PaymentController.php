@@ -52,7 +52,7 @@ class PaymentController extends Controller
                         $request->user(),
                         $order->seller,
                         $order->id,
-                        $order->total_price
+                        (int) $order->total_price // Convert decimal to integer
                     );
                 } catch (\Exception $e) {
                     return response()->json([
