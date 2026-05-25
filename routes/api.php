@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\API\AuthController;
+use App\Http\Controllers\API\CancellationRequestController;
 use App\Http\Controllers\API\NotificationController;
 use App\Http\Controllers\API\OrderController;
 use App\Http\Controllers\API\OrderTransactionChatController;
@@ -40,6 +41,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/seller/orders/{id}/ship', [OrderController::class, 'ship']); // Seller only
     Route::put('/orders/{id}/confirm', [OrderController::class, 'confirm']); // Buyer only
     Route::put('/orders/{id}/cancel', [OrderController::class, 'cancel']); // Buyer only
+
+    // Cancellation Requests
+    Route::post('/orders/{id}/cancellation-request', [CancellationRequestController::class, 'store']); // Buyer submit
+    Route::get('/orders/{id}/cancellation-request', [CancellationRequestController::class, 'show']); // Buyer/Seller view
+    Route::put('/orders/{id}/cancellation-request/approve', [CancellationRequestController::class, 'approve']); // Seller approve
+    Route::put('/orders/{id}/cancellation-request/reject', [CancellationRequestController::class, 'reject']); // Seller reject
+    Route::get('/seller/cancellation-requests', [CancellationRequestController::class, 'sellerRequests']); // Seller list
 
     // Payments
     Route::post('/orders/{id}/pay', [PaymentController::class, 'pay']); // Buyer only

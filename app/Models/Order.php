@@ -78,6 +78,11 @@ class Order extends Model
         return $this->hasMany(OrderTransactionActivity::class);
     }
 
+    public function cancellationRequest()
+    {
+        return $this->hasOne(CancellationRequest::class);
+    }
+
     // Scopes
     public function scopeByBuyer($query, $buyerId)
     {
