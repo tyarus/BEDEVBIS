@@ -28,11 +28,11 @@ class CancellationRequestController extends Controller
      * 1️⃣ POST /api/orders/{id}/cancellation-request
      * Create cancellation request (by buyer)
      */
-    public function store($orderId, CreateCancellationRequestRequest $request): JsonResponse
+    public function store($id, CreateCancellationRequestRequest $request): JsonResponse
     {
         try {
             // Find order
-            $order = Order::findOrFail($orderId);
+            $order = Order::findOrFail($id);
 
             // Validate: order belongs to buyer
             if ($order->buyer_id !== $request->user()->id) {
@@ -52,7 +52,7 @@ class CancellationRequestController extends Controller
             }
 
             // Validate: tidak boleh ada cancellation request sebelumnya untuk order ini
-            $existingRequest = CancellationRequest::where('order_id', $orderId)->first();
+            $existingRequest = CancellationRequest::where('order_id', $id)->first();
             if ($existingRequest) {
                 return response()->json([
                     'success' => false,
@@ -62,7 +62,7 @@ class CancellationRequestController extends Controller
 
             // Create cancellation request
             $cancellationRequest = CancellationRequest::create([
-                'order_id' => $orderId,
+                'order_id' => $id,
                 'buyer_id' => $request->user()->id,
                 'seller_id' => $order->seller_id,
                 'reason' => $request->reason,
@@ -73,9 +73,9 @@ class CancellationRequestController extends Controller
             // Send notification to seller
             Notification::create([
                 'user_id' => $order->seller_id,
-                'order_id' => $orderId,
+                'order_id' => $id,
                 'title' => 'Permintaan Pembatalan Order',
-                'message' => 'Buyer mengajukan permintaan pembatalan untuk order #' . $orderId,
+                'message' => 'Buyer mengajukan permintaan pembatalan untuk order #' . $id,
                 'type' => 'cancellation_request',
                 'action_url' => '/seller/cancellation-requests',
                 'action_label' => 'Lihat Permohonan',
@@ -113,11 +113,11 @@ class CancellationRequestController extends Controller
      * 2️⃣ GET /api/orders/{id}/cancellation-request
      * Get cancellation request status (by buyer or seller)
      */
-    public function show($orderId, Request $request): JsonResponse
+    public function show($id, Request $request): JsonResponse
     {
         try {
             // Find order first
-            $order = Order::findOrFail($orderId);
+            $order = Order::findOrFail($id);
 
             // Validate: buyer or seller dapat akses
             $userId = $request->user()->id;
@@ -129,7 +129,7 @@ class CancellationRequestController extends Controller
             }
 
             // Find cancellation request
-            $cancellationRequest = CancellationRequest::where('order_id', $orderId)->first();
+            $cancellationRequest = CancellationRequest::where('order_id', $id)->first();
 
             if (!$cancellationRequest) {
                 return response()->json([
@@ -172,12 +172,12 @@ class CancellationRequestController extends Controller
      * 3️⃣ PUT /api/orders/{id}/cancellation-request/approve
      * Approve cancellation request (by seller) - release escrow to buyer
      */
-    public function approve($orderId, ApproveCancellationRequestRequest $request): JsonResponse
+    public function approve($id, ApproveCancellationRequestRequest $request): JsonResponse
     {
-        return DB::transaction(function () use ($orderId, $request) {
+        return DB::transaction(function () use ($id, $request) {
             try {
                 // Find order
-                $order = Order::findOrFail($orderId);
+                $order = Order::findOrFail($id);
 
                 // Validate: seller owns this order
                 if ($order->seller_id !== $request->user()->id) {
@@ -188,7 +188,7 @@ class CancellationRequestController extends Controller
                 }
 
                 // Find cancellation request
-                $cancellationRequest = CancellationRequest::where('order_id', $orderId)
+                $cancellationRequest = CancellationRequest::where('order_id', $id)
                     ->where('status', 'pending')
                     ->first();
 
@@ -219,7 +219,7 @@ class CancellationRequestController extends Controller
 
                 // Create activity log
                 OrderTransactionActivity::create([
-                    'order_id' => $orderId,
+                    'order_id' => $id,
                     'actor_id' => $request->user()->id,
                     'actor_role' => 'seller',
                     'action' => 'cancellation_approved',
@@ -236,12 +236,12 @@ class CancellationRequestController extends Controller
                 // Send notification to buyer: approval
                 Notification::create([
                     'user_id' => $order->buyer_id,
-                    'order_id' => $orderId,
+                    'order_id' => $id,
                     'title' => 'Pesanan Dibatalkan',
                     'message' => 'Permohonan pembatalan pesanan Anda telah disetujui. Dana sebesar ' .
                         'Rp' . number_format($refundedAmount, 0, ',', '.') . ' telah dikembalikan ke dompet Anda',
                     'type' => 'cancellation_approved',
-                    'action_url' => '/orders/' . $orderId,
+                    'action_url' => '/orders/' . $id,
                     'action_label' => 'Lihat Pesanan',
                 ]);
 
@@ -274,12 +274,12 @@ class CancellationRequestController extends Controller
      * 4️⃣ PUT /api/orders/{id}/cancellation-request/reject
      * Reject cancellation request (by seller)
      */
-    public function reject($orderId, RejectCancellationRequestRequest $request): JsonResponse
+    public function reject($id, RejectCancellationRequestRequest $request): JsonResponse
     {
-        return DB::transaction(function () use ($orderId, $request) {
+        return DB::transaction(function () use ($id, $request) {
             try {
                 // Find order
-                $order = Order::findOrFail($orderId);
+                $order = Order::findOrFail($id);
 
                 // Validate: seller owns this order
                 if ($order->seller_id !== $request->user()->id) {
@@ -290,7 +290,7 @@ class CancellationRequestController extends Controller
                 }
 
                 // Find cancellation request
-                $cancellationRequest = CancellationRequest::where('order_id', $orderId)
+                $cancellationRequest = CancellationRequest::where('order_id', $id)
                     ->where('status', 'pending')
                     ->first();
 
@@ -309,7 +309,7 @@ class CancellationRequestController extends Controller
 
                 // Create activity log
                 OrderTransactionActivity::create([
-                    'order_id' => $orderId,
+                    'order_id' => $id,
                     'actor_id' => $request->user()->id,
                     'actor_role' => 'seller',
                     'action' => 'cancellation_rejected',
@@ -325,11 +325,11 @@ class CancellationRequestController extends Controller
                 // Send notification to buyer: rejection
                 Notification::create([
                     'user_id' => $order->buyer_id,
-                    'order_id' => $orderId,
+                    'order_id' => $id,
                     'title' => 'Permintaan Pembatalan Ditolak',
                     'message' => 'Permintaan pembatalan pesanan Anda telah ditolak. Alasan: ' . $request->reason,
                     'type' => 'cancellation_rejected',
-                    'action_url' => '/orders/' . $orderId,
+                    'action_url' => '/orders/' . $id,
                     'action_label' => 'Lihat Pesanan',
                 ]);
 
