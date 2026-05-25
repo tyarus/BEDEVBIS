@@ -5,6 +5,7 @@ param(
     [string]$WebService = "web",
     [string]$DbService = "MySQL",
     [switch]$AddMySqlService,
+    [switch]$RotateAppKey,
     [switch]$RunSeed
 )
 
@@ -84,10 +85,22 @@ if ($AddMySqlService) {
     Invoke-Railway add --database mysql
 }
 
-Write-Host "Generate APP_KEY dari Laravel..."
-$appKey = (& php artisan key:generate --show).Trim()
-if ([string]::IsNullOrWhiteSpace($appKey)) {
-    throw "Gagal generate APP_KEY."
+Write-Host "Membaca APP_KEY saat ini..."
+$appKey = $null
+$currentVarsResult = Invoke-NativeRailway variable list --service $WebService -k
+if ($currentVarsResult.ExitCode -eq 0 -and $currentVarsResult.Output) {
+    $currentAppKeyLine = $currentVarsResult.Output | Where-Object { $_ -match '^APP_KEY=' } | Select-Object -First 1
+    if ($currentAppKeyLine) {
+        $appKey = ($currentAppKeyLine -replace '^APP_KEY=', '').Trim()
+    }
+}
+
+if ($RotateAppKey -or [string]::IsNullOrWhiteSpace($appKey)) {
+    Write-Host "Generate APP_KEY baru dari Laravel..."
+    $appKey = (& php artisan key:generate --show).Trim()
+    if ([string]::IsNullOrWhiteSpace($appKey)) {
+        throw "Gagal generate APP_KEY."
+    }
 }
 
 $dbHostRef = '${{' + $DbService + '.MYSQLHOST}}'
@@ -128,7 +141,12 @@ Write-Host "Redeploy service..."
 Invoke-Railway redeploy --service $WebService --yes
 
 Write-Host "Menampilkan log deploy terbaru..."
-Invoke-Railway service logs --service $WebService --latest -n 120
+$logResult = Invoke-NativeRailway service logs --service $WebService --latest -n 120
+if ($logResult.ExitCode -eq 0 -and $logResult.Output) {
+    $logResult.Output | ForEach-Object { Write-Host $_ }
+} else {
+    Write-Host "Gagal ambil log terbaru (timeout jaringan Railway). Lanjut tanpa menghentikan setup."
+}
 
 if ($RunSeed) {
     Write-Host "RunSeed dilewati. Untuk host private Railway, jalankan seed dari startup command atau Railway shell di service."
