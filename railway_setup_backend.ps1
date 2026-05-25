@@ -125,14 +125,13 @@ foreach ($item in $variables) {
 }
 
 Write-Host "Redeploy service..."
-Invoke-Railway redeploy --service $WebService
+Invoke-Railway redeploy --service $WebService --yes
 
-Write-Host "Menjalankan migrate..."
-Invoke-Railway run php artisan migrate --force
+Write-Host "Menampilkan log deploy terbaru..."
+Invoke-Railway service logs --service $WebService --latest -n 120
 
 if ($RunSeed) {
-    Write-Host "Menjalankan seed..."
-    Invoke-Railway run php artisan db:seed --force
+    Write-Host "RunSeed dilewati. Untuk host private Railway, jalankan seed dari startup command atau Railway shell di service."
 }
 
 Write-Host "Selesai. Verifikasi health endpoint:"
