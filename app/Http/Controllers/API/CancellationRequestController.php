@@ -238,8 +238,8 @@ class CancellationRequestController extends Controller
                     'user_id' => $order->buyer_id,
                     'order_id' => $orderId,
                     'title' => 'Pesanan Dibatalkan',
-                    'message' => 'Permohonan pembatalan pesanan Anda telah disetujui. Dana sebesar ' . 
-                                 'Rp' . number_format($refundedAmount, 0, ',', '.') . ' telah dikembalikan ke dompet Anda',
+                    'message' => 'Permohonan pembatalan pesanan Anda telah disetujui. Dana sebesar ' .
+                        'Rp' . number_format($refundedAmount, 0, ',', '.') . ' telah dikembalikan ke dompet Anda',
                     'type' => 'cancellation_approved',
                     'action_url' => '/orders/' . $orderId,
                     'action_label' => 'Lihat Pesanan',
