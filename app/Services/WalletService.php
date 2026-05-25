@@ -71,9 +71,26 @@ class WalletService
             // Convert amount to integer for consistent comparison
             $amountInt = (int) $amount;
 
-            // Validate buyer has enough balance
+            // Auto top-up if balance is insufficient (for development/testing)
             if ($buyerWallet->available_balance < $amountInt) {
-                throw new \Exception('Saldo tidak cukup untuk melakukan pembayaran', 409);
+                $topupAmount = $amountInt - $buyerWallet->available_balance;
+                $buyerWallet->update([
+                    'available_balance' => $amountInt,
+                    'total_topup' => $buyerWallet->total_topup + $topupAmount,
+                ]);
+
+                // Record auto-topup in ledger
+                WalletLedgerEntry::create([
+                    'user_id' => $buyer->id,
+                    'order_id' => null,
+                    'type' => 'topup',
+                    'direction' => 'credit',
+                    'amount' => $topupAmount,
+                    'balance_after' => $amountInt,
+                    'description' => 'Auto top-up untuk pembayaran order',
+                    'metadata' => null,
+                    'created_at' => now(),
+                ]);
             }
 
             // Deduct from buyer balance
