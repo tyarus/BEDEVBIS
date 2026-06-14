@@ -76,19 +76,13 @@ class PaymentController extends Controller
             // Update order status
             $order->update(['status' => 'paid']);
 
-            // REDUCE PRODUCT STOCK
-            $product = $order->product;
-            if ($product) {
-                $product->decrement('stock', $order->quantity);
-            }
-
             // Create escrow log
             EscrowLog::create([
                 'order_id' => $order->id,
                 'actor_id' => $request->user()->id,
                 'action' => 'payment_received',
                 'amount' => $order->total_price,
-                'note' => 'Payment via ' . $paymentMethod,
+                'note' => 'Payment via '.$paymentMethod,
             ]);
 
             // Send notification to seller

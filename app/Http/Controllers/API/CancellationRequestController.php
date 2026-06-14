@@ -3,17 +3,20 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\CreateCancellationRequestRequest;
 use App\Http\Requests\ApproveCancellationRequestRequest;
+use App\Http\Requests\CreateCancellationRequestRequest;
 use App\Http\Requests\RejectCancellationRequestRequest;
+use App\Http\Resources\OrderResource;
 use App\Models\CancellationRequest;
 use App\Models\Notification;
 use App\Models\Order;
 use App\Models\OrderTransactionActivity;
 use App\Services\WalletService;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class CancellationRequestController extends Controller
 {
@@ -44,7 +47,7 @@ class CancellationRequestController extends Controller
 
             // Validate: order status harus dalam status yang bisa dibatalkan
             $cancellableStatuses = ['pending_payment', 'paid', 'processing'];
-            if (!in_array($order->status, $cancellableStatuses)) {
+            if (! in_array($order->status, $cancellableStatuses)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Order dengan status ini tidak bisa dibatalkan',
@@ -75,7 +78,7 @@ class CancellationRequestController extends Controller
                 'user_id' => $order->seller_id,
                 'order_id' => $id,
                 'title' => 'Permintaan Pembatalan Order',
-                'message' => 'Buyer mengajukan permintaan pembatalan untuk order #' . $id,
+                'message' => 'Buyer mengajukan permintaan pembatalan untuk order #'.$id,
                 'type' => 'cancellation_request',
                 'action_url' => '/seller/cancellation-requests',
                 'action_label' => 'Lihat Permohonan',
@@ -95,7 +98,7 @@ class CancellationRequestController extends Controller
                     'created_at' => $cancellationRequest->created_at,
                 ],
             ], 201);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        } catch (ModelNotFoundException $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Order tidak ditemukan',
@@ -131,7 +134,7 @@ class CancellationRequestController extends Controller
             // Find cancellation request
             $cancellationRequest = CancellationRequest::where('order_id', $id)->first();
 
-            if (!$cancellationRequest) {
+            if (! $cancellationRequest) {
                 return response()->json([
                     'success' => true,
                     'data' => null,
@@ -154,7 +157,7 @@ class CancellationRequestController extends Controller
                     'updated_at' => $cancellationRequest->updated_at,
                 ],
             ], 200);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        } catch (ModelNotFoundException $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Order tidak ditemukan',
@@ -176,8 +179,8 @@ class CancellationRequestController extends Controller
     {
         return DB::transaction(function () use ($id, $request) {
             try {
-                // Find order
-                $order = Order::findOrFail($id);
+                // Find order with product relationship
+                $order = Order::with('product')->findOrFail($id);
 
                 // Validate: seller owns this order
                 if ($order->seller_id !== $request->user()->id) {
@@ -192,7 +195,7 @@ class CancellationRequestController extends Controller
                     ->where('status', 'pending')
                     ->first();
 
-                if (!$cancellationRequest) {
+                if (! $cancellationRequest) {
                     return response()->json([
                         'success' => false,
                         'message' => 'Permohonan pembatalan tidak ditemukan atau sudah diproses',
@@ -208,16 +211,72 @@ class CancellationRequestController extends Controller
                 // Update order status
                 $order->update(['status' => 'cancelled']);
 
-                // Release escrow back to buyer
-                $escrow = $order->walletEscrow;
-                if ($escrow && $escrow->status === 'held') {
-                    $this->walletService->refundFundsToBuyer($escrow);
-                    $refundedAmount = $escrow->amount;
-                } else {
-                    $refundedAmount = 0;
+                // 🎯 RESTORE PRODUCT STOCK & STATUS
+                // ===================================
+                $product = $order->product;
+                $newStock = 0;
+                $restoreData = [
+                    'product_id' => null,
+                    'product_name' => null,
+                    'original_stock' => null,
+                    'new_stock' => null,
+                    'quantity_restored' => $order->quantity,
+                ];
+
+                if ($product) {
+                    $originalStock = $product->stock;
+                    $newStock = $originalStock + $order->quantity;
+
+                    // Use query builder for direct database update
+                    DB::table('products')
+                        ->where('id', $product->id)
+                        ->update([
+                            'stock' => $newStock,
+                            'status' => 'active',
+                            'updated_at' => now(),
+                        ]);
+
+                    // Prepare data for logging
+                    $restoreData = [
+                        'product_id' => $product->id,
+                        'product_name' => $product->name,
+                        'original_stock' => $originalStock,
+                        'new_stock' => $newStock,
+                        'quantity_restored' => $order->quantity,
+                    ];
+
+                    // Log activity untuk audit trail
+                    Log::info('Product stock restored after cancellation approval', [
+                        'product_id' => $product->id,
+                        'product_name' => $product->name,
+                        'order_id' => $order->id,
+                        'buyer_id' => $order->buyer_id,
+                        'seller_id' => $order->seller_id,
+                        'quantity_restored' => $order->quantity,
+                        'original_stock' => $originalStock,
+                        'new_stock' => $newStock,
+                        'timestamp' => now(),
+                    ]);
                 }
 
-                // Create activity log
+                // Release escrow back to buyer
+                $escrow = $order->walletEscrow;
+                $refundedAmount = 0;
+                if ($escrow && $escrow->status === 'held') {
+                    try {
+                        $this->walletService->refundFundsToBuyer($escrow);
+                        $refundedAmount = $escrow->amount;
+                    } catch (\Exception $e) {
+                        Log::warning('Failed to refund escrow during cancellation approval', [
+                            'order_id' => $order->id,
+                            'escrow_id' => $escrow->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                        // Continue anyway - don't block the cancellation
+                    }
+                }
+
+                // Create activity log with detailed metadata
                 OrderTransactionActivity::create([
                     'order_id' => $id,
                     'actor_id' => $request->user()->id,
@@ -228,22 +287,40 @@ class CancellationRequestController extends Controller
                     'user_agent' => $request->userAgent(),
                     'metadata' => [
                         'cancellation_reason' => $cancellationRequest->reason,
+                        'cancellation_details' => $cancellationRequest->details,
+                        'seller_notes' => $request->seller_notes,
                         'refunded_amount' => $refundedAmount,
+                        'stock_restored' => $restoreData,
+                        'escrow_refunded' => $refundedAmount > 0,
                     ],
                     'created_at' => now(),
                 ]);
 
-                // Send notification to buyer: approval
-                Notification::create([
-                    'user_id' => $order->buyer_id,
-                    'order_id' => $id,
-                    'title' => 'Pesanan Dibatalkan',
-                    'message' => 'Permohonan pembatalan pesanan Anda telah disetujui. Dana sebesar ' .
-                        'Rp' . number_format($refundedAmount, 0, ',', '.') . ' telah dikembalikan ke dompet Anda',
-                    'type' => 'cancellation_approved',
-                    'action_url' => '/orders/' . $id,
-                    'action_label' => 'Lihat Pesanan',
-                ]);
+                // Send notification to buyer: approval (non-blocking)
+                try {
+                    Notification::create([
+                        'user_id' => $order->buyer_id,
+                        'order_id' => $id,
+                        'title' => 'Pesanan Dibatalkan',
+                        'message' => 'Permohonan pembatalan pesanan Anda telah disetujui. '.
+                            ($refundedAmount > 0 ? 'Dana sebesar Rp'.number_format($refundedAmount, 0, ',', '.').' telah dikembalikan ke dompet Anda.' : '').
+                            ($product ? ' Stok produk '.$product->name.' telah dipulihkan.' : ''),
+                        'type' => 'cancellation_approved',
+                        'action_url' => '/orders/'.$id,
+                        'action_label' => 'Lihat Pesanan',
+                    ]);
+                } catch (\Exception $e) {
+                    // Log error but don't block the response
+                    Log::warning('Failed to create buyer notification for cancellation approval', [
+                        'order_id' => $order->id,
+                        'buyer_id' => $order->buyer_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
+                // Refresh order dengan product terbaru untuk response
+                $order->refresh();
+                $order->load('product');
 
                 return response()->json([
                     'success' => true,
@@ -252,18 +329,31 @@ class CancellationRequestController extends Controller
                         'id' => $order->id,
                         'status' => $order->status,
                         'refunded_amount' => $refundedAmount,
-                        'refunded_to_wallet' => true,
+                        'refunded_to_wallet' => $refundedAmount > 0,
+                        'stock_restored' => $restoreData,
+                        'product' => [
+                            'id' => $product?->id,
+                            'name' => $product?->name,
+                            'stock' => $product ? $newStock : null,
+                        ],
+                        'order' => new OrderResource($order),
                     ],
                 ], 200);
-            } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            } catch (ModelNotFoundException $e) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Order tidak ditemukan',
                 ], 404);
             } catch (\Exception $e) {
+                Log::error('Error approving cancellation request', [
+                    'order_id' => $id,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+
                 return response()->json([
                     'success' => false,
-                    'message' => 'Terjadi kesalahan',
+                    'message' => 'Terjadi kesalahan saat menyetujui pembatalan',
                     'errors' => ['error' => $e->getMessage()],
                 ], 500);
             }
@@ -294,7 +384,7 @@ class CancellationRequestController extends Controller
                     ->where('status', 'pending')
                     ->first();
 
-                if (!$cancellationRequest) {
+                if (! $cancellationRequest) {
                     return response()->json([
                         'success' => false,
                         'message' => 'Permohonan pembatalan tidak ditemukan atau sudah diproses',
@@ -305,6 +395,14 @@ class CancellationRequestController extends Controller
                 $cancellationRequest->update([
                     'status' => 'rejected',
                     'rejection_reason' => $request->reason,
+                ]);
+
+                Log::info('Cancellation request rejected', [
+                    'order_id' => $id,
+                    'cancellation_request_id' => $cancellationRequest->id,
+                    'seller_id' => $request->user()->id,
+                    'rejection_reason' => $request->reason,
+                    'timestamp' => now(),
                 ]);
 
                 // Create activity log
@@ -322,16 +420,25 @@ class CancellationRequestController extends Controller
                     'created_at' => now(),
                 ]);
 
-                // Send notification to buyer: rejection
-                Notification::create([
-                    'user_id' => $order->buyer_id,
-                    'order_id' => $id,
-                    'title' => 'Permintaan Pembatalan Ditolak',
-                    'message' => 'Permintaan pembatalan pesanan Anda telah ditolak. Alasan: ' . $request->reason,
-                    'type' => 'cancellation_rejected',
-                    'action_url' => '/orders/' . $id,
-                    'action_label' => 'Lihat Pesanan',
-                ]);
+                // Send notification to buyer: rejection (non-blocking)
+                try {
+                    Notification::create([
+                        'user_id' => $order->buyer_id,
+                        'order_id' => $id,
+                        'title' => 'Permintaan Pembatalan Ditolak',
+                        'message' => 'Permintaan pembatalan pesanan Anda telah ditolak. Alasan: '.$request->reason,
+                        'type' => 'cancellation_rejected',
+                        'action_url' => '/orders/'.$id,
+                        'action_label' => 'Lihat Pesanan',
+                    ]);
+                } catch (\Exception $e) {
+                    // Log error but don't block the response
+                    Log::warning('Failed to create buyer notification for cancellation rejection', [
+                        'order_id' => $order->id,
+                        'buyer_id' => $order->buyer_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
 
                 return response()->json([
                     'success' => true,
@@ -342,15 +449,21 @@ class CancellationRequestController extends Controller
                         'rejection_reason' => $cancellationRequest->rejection_reason,
                     ],
                 ], 200);
-            } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            } catch (ModelNotFoundException $e) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Order tidak ditemukan',
                 ], 404);
             } catch (\Exception $e) {
+                Log::error('Error rejecting cancellation request', [
+                    'order_id' => $id,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+
                 return response()->json([
                     'success' => false,
-                    'message' => 'Terjadi kesalahan',
+                    'message' => 'Terjadi kesalahan saat menolak pembatalan',
                     'errors' => ['error' => $e->getMessage()],
                 ], 500);
             }

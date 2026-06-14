@@ -13,6 +13,8 @@ use App\Models\WalletEscrow;
 use App\Services\WalletService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
@@ -22,6 +24,7 @@ class OrderController extends Controller
     {
         $this->walletService = $walletService;
     }
+
     public function store(CreateOrderRequest $request): JsonResponse
     {
         try {
@@ -44,6 +47,25 @@ class OrderController extends Controller
                 'quantity' => $request->quantity,
                 'total_price' => $product->price * $request->quantity,
                 'status' => 'pending_payment',
+            ]);
+
+            // Decrease product stock
+            DB::table('products')
+                ->where('id', $product->id)
+                ->update([
+                    'stock' => $product->stock - $request->quantity,
+                    'updated_at' => now(),
+                ]);
+
+            // Log stock decrease
+            Log::info('Product stock decreased after order creation', [
+                'product_id' => $product->id,
+                'product_name' => $product->name,
+                'order_id' => $order->id,
+                'quantity_ordered' => $request->quantity,
+                'previous_stock' => $product->stock,
+                'new_stock' => $product->stock - $request->quantity,
+                'timestamp' => now(),
             ]);
 
             // Create escrow log
@@ -189,7 +211,7 @@ class OrderController extends Controller
                 'order_id' => $order->id,
                 'actor_id' => $request->user()->id,
                 'action' => 'order_shipped',
-                'note' => 'Tracking: ' . $request->tracking_number,
+                'note' => 'Tracking: '.$request->tracking_number,
             ]);
 
             $order->load(['buyer', 'seller', 'product']);
@@ -223,7 +245,7 @@ class OrderController extends Controller
             }
 
             // Check if order is in a confirmable status
-            if (!in_array($order->status, ['shipped', 'delivered'], true)) {
+            if (! in_array($order->status, ['shipped', 'delivered'], true)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Order harus dalam status shipped atau delivered',
@@ -239,7 +261,7 @@ class OrderController extends Controller
                 } catch (\Exception $e) {
                     return response()->json([
                         'success' => false,
-                        'message' => 'Gagal melepaskan dana escrow: ' . $e->getMessage(),
+                        'message' => 'Gagal melepaskan dana escrow: '.$e->getMessage(),
                         'errors' => [],
                     ], 400);
                 }
@@ -277,7 +299,7 @@ class OrderController extends Controller
     public function cancel($id, Request $request): JsonResponse
     {
         try {
-            $order = Order::findOrFail($id);
+            $order = Order::with('product')->findOrFail($id);
 
             // Check if user is the buyer
             if ($order->buyer_id !== $request->user()->id) {
@@ -290,10 +312,10 @@ class OrderController extends Controller
 
             // Check if order is pending payment (cancel only for unpaid orders)
             // But if already paid, need to refund from escrow
-            if (!in_array($order->status, ['pending_payment', 'paid', 'shipped'], true)) {
+            if (! in_array($order->status, ['pending_payment', 'paid', 'shipped'], true)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Order dengan status ' . $order->status . ' tidak bisa dibatalkan',
+                    'message' => 'Order dengan status '.$order->status.' tidak bisa dibatalkan',
                     'errors' => [],
                 ], 400);
             }
@@ -304,11 +326,49 @@ class OrderController extends Controller
                     $escrow = WalletEscrow::where('order_id', $order->id)->firstOrFail();
                     if ($escrow->status === 'held') {
                         $this->walletService->refundFundsToBuyer($escrow);
+                        Log::info('Escrow refunded successfully on order cancellation', [
+                            'order_id' => $order->id,
+                            'escrow_id' => $escrow->id,
+                            'amount' => $escrow->amount,
+                        ]);
                     }
                 } catch (\Exception $e) {
                     // If no escrow or refund fails, log but continue
-                    \Log::warning("Failed to refund escrow for order {$id}: " . $e->getMessage());
+                    Log::warning("Failed to refund escrow for order {$id}: ".$e->getMessage(), [
+                        'order_id' => $id,
+                        'error' => $e->getMessage(),
+                    ]);
                 }
+            }
+
+            // 🎯 RESTORE PRODUCT STOCK & STATUS
+            // ==================================
+            $product = $order->product;
+            if ($product) {
+                $originalStock = $product->stock;
+                $newStock = $originalStock + $order->quantity;
+
+                // Use query builder for direct database update
+                DB::table('products')
+                    ->where('id', $product->id)
+                    ->update([
+                        'stock' => $newStock,
+                        'status' => 'active',
+                        'updated_at' => now(),
+                    ]);
+
+                // Log activity untuk audit trail
+                Log::info('Product stock restored after order cancellation by buyer', [
+                    'product_id' => $product->id,
+                    'product_name' => $product->name,
+                    'order_id' => $order->id,
+                    'buyer_id' => $order->buyer_id,
+                    'seller_id' => $order->seller_id,
+                    'quantity_restored' => $order->quantity,
+                    'original_stock' => $originalStock,
+                    'new_stock' => $newStock,
+                    'timestamp' => now(),
+                ]);
             }
 
             // Update order
@@ -330,6 +390,12 @@ class OrderController extends Controller
                 'data' => new OrderResource($order),
             ], 200);
         } catch (\Exception $e) {
+            Log::error('Error cancelling order', [
+                'order_id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Order tidak ditemukan',
